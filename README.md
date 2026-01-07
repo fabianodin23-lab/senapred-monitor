@@ -1,153 +1,59 @@
-# 🚨 Monitor SENAPRED Chile
+# 🚨 Monitor SENAPRED v5.2
 
-<p align="center">
-  <strong>Sistema de monitoreo en tiempo real de alertas de emergencia de SENAPRED Chile</strong>
-</p>
+Sistema de monitoreo en tiempo real de alertas del Servicio Nacional de Prevención y Respuesta ante Desastres de Chile (SENAPRED).
 
-<p align="center">
-  <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform">
-  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT">
-  <img src="https://img.shields.io/badge/SENAPRED-Chile-red.svg" alt="SENAPRED Chile">
-</p>
-
----
-
-## 📋 Descripción
-
-**Monitor SENAPRED** es una herramienta que permite monitorear en tiempo real las alertas de emergencia emitidas por el [Servicio Nacional de Prevención y Respuesta ante Desastres (SENAPRED)](https://senapred.cl) de Chile.
-
-### ¿Para quién es?
-- 🌙 **Turnos nocturnos** de monitoreo de emergencias (NOC/SOC)
-- 🏢 **Centros de operaciones** de emergencia
-- 👨‍🚒 **Personal de respuesta** (bomberos, rescatistas)
-- 📊 **Análisis de datos** de emergencias
-
----
+![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 ## ✨ Características
 
-| Característica | Descripción |
-|----------------|-------------|
-| 📡 **Monitoreo en tiempo real** | Consulta automática cada X minutos |
-| 🔔 **Notificaciones** | Alertas sonoras y de escritorio |
-| 📊 **Dashboard HTML** | Gráficos interactivos auto-actualizables |
-| 🔍 **Información completa** | Extrae todos los detalles de cada alerta |
-| 🆕 **Detección de cambios** | Nueva, actualizada, cancelada |
-| 📅 **Filtro por fecha** | Solo alertas de los últimos N días |
+- 🔴🟡🟢 **Monitoreo de alertas**: Roja, Amarilla y Temprana/Preventiva
+- 🗺️ **Mapa de 16 regiones**: Visualiza el estado de todas las regiones de Chile
+- 📊 **Dashboard interactivo**: Gráficos y estadísticas en tiempo real
+- 🔔 **Notificaciones**: Alertas de escritorio en Windows
+- 🔊 **Sonido**: Alertas audibles para nuevas emergencias
+- 🔄 **Auto-refresh**: Dashboard se actualiza cada 30 segundos
+- 💾 **Persistencia**: Guarda estado entre ejecuciones
+- 📋 **Historial de cambios**: Registro de alertas nuevas, actualizadas y canceladas
 
-### Información que extrae de cada alerta:
-- 📍 Región, provincias y comunas afectadas
-- 🗺️ Zonas específicas (cordillera, valle, costa, etc.)
-- ⚠️ Tipo de amenaza (calor, incendio, tsunami, etc.)
-- 🌡️ Temperaturas esperadas
-- 📆 Período del evento (inicio - fin)
-- 📋 Aviso meteorológico DMC
-- 🚒 Recursos desplegados
-- 📝 Descripción completa
-
----
-
-## 🔧 Requisitos
-
-- **Python 3.8+** → [Descargar](https://www.python.org/downloads/)
-- **Google Chrome** → [Descargar](https://www.google.com/chrome/)
-
----
-
-## 📦 Instalación
-
-### 1. Clonar el repositorio
+## 📋 Requisitos
 
 ```bash
-git clone https://github.com/fabianodin23-lab/senapred-monitor.git
-cd senapred-monitor
+pip install selenium webdriver-manager beautifulsoup4 plyer
 ```
-
-### 2. Instalar dependencias
-
-**Windows (CMD o PowerShell):**
-```bash
-python -m pip install -r requirements.txt
-```
-
-**Linux/macOS:**
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Verificar instalación
-
-```bash
-python monitor_senapred.py
-```
-
----
 
 ## 🚀 Uso
 
-### Consulta simple (una vez)
-
+### Consulta única
 ```bash
-python monitor_senapred.py
+python monitor_senapred.py --dias 7
 ```
 
-### Monitoreo continuo con alertas sonoras
-
-```bash
-python monitor_senapred.py --monitor --sound
-```
-
-### Solo últimos 7 días, cada 2 minutos
-
+### Modo monitor continuo
 ```bash
 python monitor_senapred.py --monitor --sound --dias 7 --intervalo 120
 ```
 
----
+### Parámetros
 
-## ⚙️ Opciones disponibles
-
-| Opción | Corto | Descripción | Default |
-|--------|-------|-------------|---------|
-| `--monitor` | `-m` | Monitoreo continuo | No |
-| `--sound` | `-s` | Alertas sonoras | No |
-| `--dias N` | `-d N` | Días de antigüedad | 14 |
-| `--intervalo N` | `-i N` | Segundos entre consultas | 300 (5 min) |
-
-### Ejemplos:
-
-```bash
-# Monitoreo básico
-python monitor_senapred.py --monitor
-
-# Con sonido, últimos 3 días
-python monitor_senapred.py --monitor --sound --dias 3
-
-# Consulta cada 1 minuto
-python monitor_senapred.py --monitor --sound --intervalo 60
-
-# Solo ver alertas actuales sin monitoreo
-python monitor_senapred.py --dias 7
-```
-
----
+| Parámetro | Corto | Descripción | Default |
+|-----------|-------|-------------|---------|
+| `--monitor` | `-m` | Modo monitoreo continuo | False |
+| `--sound` | `-s` | Activar sonido en alertas | False |
+| `--dias` | `-d` | Días de antigüedad máxima | 14 |
+| `--intervalo` | `-i` | Segundos entre consultas | 300 |
 
 ## 📊 Dashboard
 
-El monitor genera un **dashboard HTML interactivo** que se abre en tu navegador.
+El script genera `dashboard_senapred.html` que muestra:
 
-**Archivo:** `dashboard_senapred.html`
+- **Resumen**: Total de alertas por tipo
+- **Mapa de regiones**: Las 16 regiones con su estado (verde = sin alertas)
+- **Lista de alertas**: Detalle de cada alerta activa
+- **Gráficos**: Distribución por tipo y por amenaza
+- **Cambios recientes**: Historial de modificaciones
 
-### Incluye:
-- 📈 Gráfico por tipo de alerta
-- 🗺️ Distribución por región
-- ⚠️ Alertas por tipo de amenaza
-- 📋 Lista detallada de alertas activas
-- 🔔 Historial de cambios recientes
-- 🔄 Auto-refresh cada 30 segundos
-
----
+Abre el archivo en tu navegador para visualizar.
 
 ## 📁 Archivos generados
 
@@ -155,59 +61,45 @@ El monitor genera un **dashboard HTML interactivo** que se abre en tu navegador.
 |---------|-------------|
 | `dashboard_senapred.html` | Dashboard visual |
 | `datos_alertas.js` | Datos para el dashboard |
-| `estado_alertas.json` | Persistencia del monitor |
-| `log_alertas.txt` | Registro de actividad |
+| `estado_alertas.json` | Estado persistente |
 
----
+## 🔔 Tipos de alerta
 
-## 🔔 Tipos de Alerta SENAPRED
+| Tipo | Color | Descripción |
+|------|-------|-------------|
+| Roja | 🔴 | Emergencia mayor |
+| Amarilla | 🟡 | Precaución |
+| Temprana | 🟢 | Preventiva |
 
-| Color | Nivel | Descripción |
-|-------|-------|-------------|
-| 🔴 | **Alerta Roja** | Emergencia máxima |
-| 🟡 | **Alerta Amarilla** | Precaución elevada |
-| 🟢 | **Alerta Temprana Preventiva** | Monitoreo preventivo |
+## 📞 Números de emergencia Chile
 
----
+- **CONAF**: 130
+- **Bomberos**: 132
+- **Carabineros**: 133
+- **Ambulancia**: 131
 
-## 📞 Números de Emergencia Chile
+## 📝 Changelog
 
-| Servicio | Número |
-|----------|--------|
-| 🌲 CONAF (Incendios) | **130** |
-| 🚒 Bomberos | **132** |
-| 👮 Carabineros | **133** |
-| 🚑 Ambulancia | **131** |
-| 🔍 PDI | **134** |
+### v5.2 (Actual)
+- ✂️ Código optimizado (-25% tamaño)
+- 🗺️ Mapa de 16 regiones de Chile
+- ✅ Indicador de regiones sin alertas
+- 🎨 Dashboard mejorado
 
----
+### v5.0
+- 📦 Extracción completa de datos
+- 🔄 Sistema de deduplicación
+- 📊 Dashboard con gráficos
 
-## 🤝 Contribuir
-
-Las contribuciones son bienvenidas:
-
-1. Fork el proyecto
-2. Crea tu branch (`git checkout -b feature/nueva-funcion`)
-3. Commit (`git commit -m 'Agregar nueva función'`)
-4. Push (`git push origin feature/nueva-funcion`)
-5. Abre un Pull Request
-
----
+### v4.0
+- 💾 Persistencia de estado
+- 🔔 Notificaciones de escritorio
+- 🔊 Alertas sonoras
 
 ## 📄 Licencia
 
-MIT License - ver [LICENSE](LICENSE)
+MIT License
 
----
+## 🔗 Fuente
 
-## ⚠️ Disclaimer
-
-Este proyecto **no está afiliado oficialmente** con SENAPRED ni con el Gobierno de Chile. Es una herramienta independiente que obtiene información pública.
-
-**Siempre verifica la información oficial** en [senapred.cl](https://senapred.cl)
-
----
-
-<p align="center">
-  Desarrollado con ❤️ para la seguridad de Chile 🇨🇱
-</p>
+Datos obtenidos de [SENAPRED](https://senapred.cl/alertas/)
