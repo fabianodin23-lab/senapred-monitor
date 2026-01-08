@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MONITOR SENAPRED v5.4
-- ID único basado en hash de URL (evita colisiones)
-- Mejor captura de todas las alertas
+MONITOR SENAPRED v6.1
+- Dashboard estilo Grafana (dark theme profesional)
+- config.json para configuración
+- Modo silencioso nocturno  
+- Resumen diario automático
 """
 
-import argparse, json, time, os, sys, re, hashlib
+import argparse, json, time, os, sys, re, hashlib, csv
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import List, Optional, Dict
+from pathlib import Path
 
 try:
     from selenium import webdriver
@@ -32,28 +35,42 @@ try:
 except ImportError:
     NOTIF_OK = False
 
-CONFIG = {
-    'url_alertas': 'https://senapred.cl/alertas/',
-    'url_base': 'https://senapred.cl',
-    'espera_react': 6,
-    'espera_detalle': 4,
-    'archivo_estado': 'estado_alertas.json',
-    'archivo_html': 'dashboard_senapred.html',
-    'archivo_datos_js': 'datos_alertas.js',
-    'sonido_alerta': True,
+CONFIG_DEFAULT = {
+    "general": {"intervalo_segundos": 300, "dias_antiguedad": 14, "espera_pagina": 6, "espera_detalle": 4},
+    "notificaciones": {"sonido_activado": True, "notificacion_escritorio": True, 
+                       "modo_silencioso": {"activado": False, "hora_inicio": "23:00", "hora_fin": "07:00"}},
+    "filtros": {"regiones": [], "tipos_alerta": ["roja", "amarilla", "temprana"]},
+    "resumen_diario": {"activado": True, "hora_generacion": "08:00", "formato": "html"},
+    "archivos": {"estado": "estado_alertas.json", "dashboard": "dashboard_senapred.html", 
+                 "datos_js": "datos_alertas.js", "log": "log_alertas.csv", "resumen": "resumen_diario"}
 }
 
-REGIONES = [
-    'Arica y Parinacota', 'Tarapacá', 'Antofagasta', 'Atacama', 'Coquimbo',
-    'Valparaíso', 'Metropolitana', "O'Higgins", 'Maule', 'Ñuble', 'Biobío',
-    'La Araucanía', 'Los Ríos', 'Los Lagos', 'Aysén', 'Magallanes'
-]
+REGIONES = ['Arica y Parinacota', 'Tarapacá', 'Antofagasta', 'Atacama', 'Coquimbo', 'Valparaíso', 
+            'Metropolitana', "O'Higgins", 'Maule', 'Ñuble', 'Biobío', 'La Araucanía', 'Los Ríos', 
+            'Los Lagos', 'Aysén', 'Magallanes']
 
+def cargar_config() -> dict:
+    p = Path("config.json")
+    if p.exists():
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+                for k, v in CONFIG_DEFAULT.items():
+                    if k not in cfg: cfg[k] = v
+                    elif isinstance(v, dict):
+                        for kk, vv in v.items():
+                            if kk not in cfg[k]: cfg[k][kk] = vv
+                return cfg
+        except: pass
+    with open(p, 'w', encoding='utf-8') as f:
+        json.dump(CONFIG_DEFAULT, f, ensure_ascii=False, indent=2)
+    print("📝 Creado config.json")
+    return CONFIG_DEFAULT.copy()
+
+CONFIG = cargar_config()
 
 def generar_id(url: str) -> str:
-    """Genera ID único basado en hash MD5 de la URL completa"""
     return hashlib.md5(url.lower().strip().encode()).hexdigest()[:16]
-
 
 @dataclass
 class Alerta:
@@ -69,10 +86,7 @@ class Alerta:
     superficie: str
     contenido_hash: str
     estado_monitor: str = "activa"
-    
-    def to_dict(self):
-        return asdict(self)
-
+    def to_dict(self): return asdict(self)
 
 @dataclass 
 class Cambio:
@@ -81,39 +95,60 @@ class Cambio:
     fecha_hora: str
     descripcion: str
 
-
 def log(msg: str, nivel: str = "INFO"):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] [{nivel}] {msg}")
+    ts = datetime.now().strftime('%H:%M:%S')
+    print(f"[{ts}] [{nivel}] {msg}")
+    try:
+        lf = CONFIG["archivos"]["log"]
+        ex = Path(lf).exists()
+        with open(lf, 'a', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
+            if not ex: w.writerow(['fecha', 'hora', 'nivel', 'mensaje'])
+            w.writerow([datetime.now().strftime('%Y-%m-%d'), ts, nivel, msg])
+    except: pass
 
+def en_horario_silencioso() -> bool:
+    cfg = CONFIG["notificaciones"]["modo_silencioso"]
+    if not cfg["activado"]: return False
+    try:
+        ahora = datetime.now().time()
+        ini = datetime.strptime(cfg["hora_inicio"], "%H:%M").time()
+        fin = datetime.strptime(cfg["hora_fin"], "%H:%M").time()
+        return (ini <= ahora <= fin) if ini <= fin else (ahora >= ini or ahora <= fin)
+    except: return False
 
 def notificar(titulo: str, mensaje: str, urgente: bool = False):
+    if not CONFIG["notificaciones"]["notificacion_escritorio"]: return
+    if en_horario_silencioso() and not urgente: return
     if NOTIF_OK:
-        try:
-            notification.notify(title=titulo, message=mensaje[:200], app_name="SENAPRED", timeout=20 if urgente else 10)
+        try: notification.notify(title=titulo, message=mensaje[:200], app_name="SENAPRED", timeout=20 if urgente else 10)
         except: pass
 
-
 def sonido(tipo: str = "nueva"):
-    if not CONFIG['sonido_alerta']: return
+    if not CONFIG["notificaciones"]["sonido_activado"] or en_horario_silencioso(): return
     try:
         if sys.platform == 'win32':
             import winsound
-            beeps = {'nueva': [(1000,400)]*3, 'actualizada': [(800,300)], 'cancelada': [(500,600)]}
-            for freq, dur in beeps.get(tipo, []):
-                winsound.Beep(freq, dur)
-                time.sleep(0.1)
+            for f, d in {'nueva': [(1000,400)]*3, 'actualizada': [(800,300)], 'cancelada': [(500,600)]}.get(tipo, []):
+                winsound.Beep(f, d); time.sleep(0.1)
     except: print('\a')
+
+def filtrar_alertas(alertas: List[Alerta]) -> List[Alerta]:
+    r = alertas
+    if CONFIG["filtros"]["regiones"]: r = [a for a in r if a.region in CONFIG["filtros"]["regiones"]]
+    if CONFIG["filtros"]["tipos_alerta"]: r = [a for a in r if a.tipo in CONFIG["filtros"]["tipos_alerta"]]
+    return r
 
 
 class Scraper:
-    def __init__(self, dias_max: int = 14):
-        self.dias_max = dias_max
+    def __init__(self, dias_max: int = None):
+        self.dias_max = dias_max or CONFIG["general"]["dias_antiguedad"]
         self.driver = None
     
     def _crear_driver(self):
         opts = Options()
-        for arg in ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--window-size=1920,1080', '--log-level=3']:
-            opts.add_argument(arg)
+        for a in ['--headless=new', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--window-size=1920,1080', '--log-level=3']:
+            opts.add_argument(a)
         opts.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
         opts.add_experimental_option('excludeSwitches', ['enable-logging'])
         return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=opts)
@@ -123,42 +158,24 @@ class Scraper:
             log("Iniciando navegador...")
             self.driver = self._crear_driver()
             urls = self._obtener_urls()
-            log(f"URLs encontradas: {len(urls)}")
-            
-            alertas = []
-            ids_procesados = set()
-            
+            log(f"URLs: {len(urls)}")
+            alertas, ids = [], set()
             for i, url in enumerate(urls):
-                # Generar ID único basado en URL
-                alerta_id = generar_id(url)
-                
-                # Evitar duplicados
-                if alerta_id in ids_procesados:
-                    continue
-                ids_procesados.add(alerta_id)
-                
-                # Filtrar por antigüedad
-                match = re.search(r'(\d{4})-(\d{2})-(\d{2})', url)
-                if match:
+                aid = generar_id(url)
+                if aid in ids: continue
+                ids.add(aid)
+                m = re.search(r'(\d{4})-(\d{2})-(\d{2})', url)
+                if m:
                     try:
-                        fecha_alerta = datetime(int(match[1]), int(match[2]), int(match[3]))
-                        dias = (datetime.now() - fecha_alerta).days
-                        if dias > self.dias_max:
-                            continue
-                    except:
-                        pass
-                
+                        if (datetime.now() - datetime(int(m[1]), int(m[2]), int(m[3]))).days > self.dias_max: continue
+                    except: pass
                 log(f"  [{i+1}/{len(urls)}] {url[-55:]}")
-                alerta = self._extraer_alerta(url, alerta_id)
-                if alerta:
-                    alertas.append(alerta)
+                if a := self._extraer_alerta(url, aid): alertas.append(a)
                 time.sleep(0.5)
-            
-            log(f"Total: {len(alertas)} alertas capturadas")
+            alertas = filtrar_alertas(alertas)
+            log(f"Total: {len(alertas)}")
             return alertas
-        except Exception as e:
-            log(f"Error: {e}", "ERROR")
-            return []
+        except Exception as e: log(f"Error: {e}", "ERROR"); return []
         finally:
             if self.driver:
                 try: self.driver.quit()
@@ -167,253 +184,828 @@ class Scraper:
     def _obtener_urls(self) -> List[str]:
         urls = []
         try:
-            self.driver.get(CONFIG['url_alertas'])
-            time.sleep(CONFIG['espera_react'])
+            self.driver.get('https://senapred.cl/alertas/')
+            time.sleep(CONFIG["general"]["espera_pagina"])
             for _ in range(3):
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
                 time.sleep(1)
-            
-            for link in BeautifulSoup(self.driver.page_source, 'html.parser').find_all('a', href=True):
-                href = link['href']
-                if '/alerta/' in href and 'alertas' not in href:
-                    url = (CONFIG['url_base'] + href) if href.startswith('/') else href
-                    if url.startswith('http') and url not in urls:
-                        urls.append(url)
-        except Exception as e:
-            log(f"Error URLs: {e}", "ERROR")
+            for l in BeautifulSoup(self.driver.page_source, 'html.parser').find_all('a', href=True):
+                h = l['href']
+                if '/alerta/' in h and 'alertas' not in h:
+                    u = ('https://senapred.cl' + h) if h.startswith('/') else h
+                    if u.startswith('http') and u not in urls: urls.append(u)
+        except Exception as e: log(f"Error URLs: {e}", "ERROR")
         return urls
     
-    def _extraer_alerta(self, url: str, alerta_id: str) -> Optional[Alerta]:
+    def _extraer_alerta(self, url: str, aid: str) -> Optional[Alerta]:
         try:
             self.driver.get(url)
-            time.sleep(CONFIG['espera_detalle'])
-            
-            texto = BeautifulSoup(self.driver.page_source, 'html.parser').get_text(' ', strip=True)
-            t = texto.lower()
-            
-            # Detectar tipo
-            tipo = None
-            if 'alerta roja' in t:
-                tipo = 'roja'
-            elif 'alerta amarilla' in t:
-                tipo = 'amarilla'
-            elif 'temprana' in t or 'preventiva' in t:
-                tipo = 'temprana'
-            
-            if not tipo:
-                log(f"    ⚠ Sin tipo detectado", "WARN")
-                return None
-            
-            # Extraer fecha/hora de URL
-            match = re.search(r'(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})', url)
-            fecha = f"{match[3]}/{match[2]}/{match[1]}" if match else datetime.now().strftime("%d/%m/%Y")
-            hora = f"{match[4]}:{match[5]}" if match else "--:--"
-            
-            # Región
-            region = "No especificada"
-            for r in REGIONES:
-                if r.lower() in t:
-                    region = r
-                    break
-            
-            # Comuna
-            m = re.search(r'comuna[s]?\s+de\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s,]+?)(?:\s+por|\s+debido|,\s+por|\.)', texto, re.I)
-            comuna = m[1].strip().title()[:50] if m else "No especificada"
-            
-            # Causa - ampliado
-            causas = {
-                'incendio': 'Incendio Forestal', 
-                'calor': 'Calor Extremo', 
-                'temperatura': 'Altas Temperaturas', 
-                'sismo': 'Sismo', 
-                'tsunami': 'Tsunami', 
-                'temporal': 'Temporal',
-                'tormenta': 'Tormenta Eléctrica',
-                'eléctrica': 'Tormenta Eléctrica',
-                'electrica': 'Tormenta Eléctrica',
-                'volcán': 'Actividad Volcánica',
-                'volcan': 'Actividad Volcánica',
-                'volcánic': 'Actividad Volcánica',
-                'aluvión': 'Aluvión',
-                'aluvion': 'Aluvión',
-                'inundación': 'Inundación',
-                'inundacion': 'Inundación',
-                'marejada': 'Marejada',
-                'evento masivo': 'Evento Masivo',
-                'material peligroso': 'Material Peligroso',
-            }
-            causa = "Emergencia"
-            for k, v in causas.items():
-                if k in t:
-                    causa = v
-                    break
-            
-            # Recursos
-            recursos = []
-            for p, n in [(r'(\d+)\s*brigada', 'brigadas'), (r'(\d+)\s*helic', 'helicópteros'), (r'(\d+)\s*avion', 'aviones')]:
-                if m := re.search(p, t): recursos.append(f"{m[1]} {n}")
-            
-            # Superficie
-            m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:hect|ha)', t)
-            superficie = f"{m[1]} ha" if m else ""
-            
-            return Alerta(
-                id=alerta_id,
-                url=url, 
-                tipo=tipo, 
-                region=region, 
-                comuna=comuna, 
-                causa=causa,
-                fecha=fecha, 
-                hora=hora, 
-                recursos=", ".join(recursos), 
-                superficie=superficie,
-                contenido_hash=hashlib.md5(texto[:500].encode()).hexdigest()[:16]
-            )
-        except Exception as e:
-            log(f"    ✗ Error: {e}", "WARN")
-            return None
+            time.sleep(CONFIG["general"]["espera_detalle"])
+            txt = BeautifulSoup(self.driver.page_source, 'html.parser').get_text(' ', strip=True)
+            t = txt.lower()
+            tipo = 'roja' if 'alerta roja' in t else ('amarilla' if 'alerta amarilla' in t else ('temprana' if 'temprana' in t or 'preventiva' in t else None))
+            if not tipo: return None
+            m = re.search(r'(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})', url)
+            fecha = f"{m[3]}/{m[2]}/{m[1]}" if m else datetime.now().strftime("%d/%m/%Y")
+            hora = f"{m[4]}:{m[5]}" if m else "--:--"
+            region = next((r for r in REGIONES if r.lower() in t), "No especificada")
+            mc = re.search(r'comuna[s]?\s+de\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s,]+?)(?:\s+por|\s+debido|,\s+por|\.)', txt, re.I)
+            comuna = mc[1].strip().title()[:50] if mc else "No especificada"
+            causas = {'incendio': 'Incendio Forestal', 'calor': 'Calor Extremo', 'temperatura': 'Altas Temperaturas',
+                      'sismo': 'Sismo', 'tsunami': 'Tsunami', 'temporal': 'Temporal', 'tormenta': 'Tormenta Eléctrica',
+                      'eléctrica': 'Tormenta Eléctrica', 'volcán': 'Actividad Volcánica', 'volcan': 'Actividad Volcánica',
+                      'aluvión': 'Aluvión', 'inundación': 'Inundación', 'marejada': 'Marejada', 'evento masivo': 'Evento Masivo',
+                      'material peligroso': 'Material Peligroso'}
+            causa = next((v for k, v in causas.items() if k in t), "Emergencia")
+            rec = []
+            for p, n in [(r'(\d+)\s*brigada', 'brigadas'), (r'(\d+)\s*helic', 'helicópteros')]:
+                if mr := re.search(p, t): rec.append(f"{mr[1]} {n}")
+            ms = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:hect|ha)', t)
+            sup = f"{ms[1]} ha" if ms else ""
+            return Alerta(id=aid, url=url, tipo=tipo, region=region, comuna=comuna, causa=causa,
+                         fecha=fecha, hora=hora, recursos=", ".join(rec), superficie=sup,
+                         contenido_hash=hashlib.md5(txt[:500].encode()).hexdigest()[:16])
+        except Exception as e: log(f"    ✗ {e}", "WARN"); return None
 
 
 class Dashboard:
     def generar(self, alertas: List[Alerta], cambios: List[Cambio], ultima_act: str):
-        stats = {'total': len(alertas), 'rojas': sum(1 for a in alertas if a.tipo == 'roja'),
-                 'amarillas': sum(1 for a in alertas if a.tipo == 'amarilla'),
-                 'tempranas': sum(1 for a in alertas if a.tipo == 'temprana'), 'ultima_actualizacion': ultima_act}
+        # Estadísticas
+        stats = {
+            'total': len(alertas), 
+            'rojas': sum(1 for a in alertas if a.tipo == 'roja'),
+            'amarillas': sum(1 for a in alertas if a.tipo == 'amarilla'),
+            'tempranas': sum(1 for a in alertas if a.tipo == 'temprana'), 
+            'ultima_actualizacion': ultima_act,
+            'regiones_afectadas': len(set(a.region for a in alertas))
+        }
         
+        # Estado por región
         estado_regiones = {}
         for region in REGIONES:
             ar = [a for a in alertas if a.region == region]
-            if not ar:
-                estado_regiones[region] = {'estado': 'sin_alerta', 'rojas': 0, 'amarillas': 0, 'tempranas': 0}
+            if not ar: 
+                estado_regiones[region] = {'estado': 'ok', 'total': 0, 'rojas': 0, 'amarillas': 0, 'tempranas': 0}
             else:
-                r, am, t = sum(1 for a in ar if a.tipo == 'roja'), sum(1 for a in ar if a.tipo == 'amarilla'), sum(1 for a in ar if a.tipo == 'temprana')
-                estado_regiones[region] = {'estado': 'roja' if r else ('amarilla' if am else 'temprana'), 'rojas': r, 'amarillas': am, 'tempranas': t}
+                r = sum(1 for a in ar if a.tipo == 'roja')
+                am = sum(1 for a in ar if a.tipo == 'amarilla')
+                t = sum(1 for a in ar if a.tipo == 'temprana')
+                estado_regiones[region] = {
+                    'estado': 'roja' if r else ('amarilla' if am else 'temprana'), 
+                    'total': len(ar), 'rojas': r, 'amarillas': am, 'tempranas': t
+                }
         
+        # Por causa
         por_causa = {}
-        for a in alertas: por_causa[a.causa] = por_causa.get(a.causa, 0) + 1
+        for a in alertas: 
+            por_causa[a.causa] = por_causa.get(a.causa, 0) + 1
         
-        with open(CONFIG['archivo_datos_js'], 'w', encoding='utf-8') as f:
-            f.write(f"const D={json.dumps({'alertas': [a.to_dict() for a in alertas], 'cambios': [asdict(c) for c in cambios[-50:]], 'stats': stats, 'estado_regiones': estado_regiones, 'por_causa': por_causa, 'regiones': REGIONES}, ensure_ascii=False)};")
+        # Datos para JS
+        datos = {
+            'alertas': [a.to_dict() for a in alertas], 
+            'cambios': [asdict(c) for c in cambios[-30:]], 
+            'stats': stats, 
+            'estado_regiones': estado_regiones, 
+            'por_causa': por_causa,
+            'regiones': REGIONES,
+            'modo_silencioso': CONFIG["notificaciones"]["modo_silencioso"]["activado"]
+        }
         
-        html = '''<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>🚨 SENAPRED</title><script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#1a1a2e,#16213e,#0f3460);min-height:100vh;color:#fff;padding:15px}
-.hdr{text-align:center;padding:15px;background:rgba(255,255,255,.1);border-radius:12px;margin-bottom:15px}
-.hdr h1{font-size:1.8em;background:linear-gradient(45deg,#ff6b6b,#feca57,#48dbfb);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.upd{color:#48dbfb;font-size:.85em;margin-top:8px}.ar{background:rgba(72,219,251,.2);padding:4px 12px;border-radius:15px;display:inline-block;margin-top:8px;font-size:.85em}
-.sg{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:15px}
-.sc{background:rgba(255,255,255,.1);border-radius:12px;padding:15px;text-align:center}
-.sc.r{border-left:4px solid #ff6b6b}.sc.a{border-left:4px solid #feca57}.sc.t{border-left:4px solid #48dbfb}.sc.tot{border-left:4px solid #a29bfe}
-.sn{font-size:2em;font-weight:700}.sc.r .sn{color:#ff6b6b}.sc.a .sn{color:#feca57}.sc.t .sn{color:#48dbfb}.sc.tot .sn{color:#a29bfe}
-.mg{display:grid;grid-template-columns:1fr 1fr;gap:15px}@media(max-width:1100px){.mg{grid-template-columns:1fr}}
-.sec{background:rgba(255,255,255,.1);border-radius:12px;padding:15px;margin-bottom:15px}
-.sec h2{color:#48dbfb;font-size:1.1em;margin-bottom:12px;border-bottom:2px solid rgba(72,219,251,.3);padding-bottom:8px}
-.rg{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-.ri{padding:10px 12px;border-radius:8px;font-size:.85em;display:flex;justify-content:space-between;align-items:center}
-.ri.sin{background:rgba(46,204,113,.15);border-left:3px solid #2ecc71}
-.ri.roja{background:rgba(255,107,107,.2);border-left:3px solid #ff6b6b}
-.ri.amarilla{background:rgba(254,202,87,.2);border-left:3px solid #feca57}
-.ri.temprana{background:rgba(72,219,251,.2);border-left:3px solid #48dbfb}
-.rs{font-size:.75em;padding:2px 8px;border-radius:10px;font-weight:700}
-.ri.sin .rs{background:#2ecc71;color:#000}.ri.roja .rs{background:#ff6b6b}.ri.amarilla .rs{background:#feca57;color:#000}.ri.temprana .rs{background:#48dbfb;color:#000}
-.ley{display:flex;gap:15px;flex-wrap:wrap;padding:10px;background:rgba(0,0,0,.2);border-radius:8px;margin-bottom:12px;font-size:.8em}
-.li{display:flex;align-items:center;gap:5px}.lc{width:12px;height:12px;border-radius:3px}
-.lc.r{background:#ff6b6b}.lc.a{background:#feca57}.lc.t{background:#48dbfb}.lc.s{background:#2ecc71}
-.al{max-height:500px;overflow-y:auto}
-.ai{background:rgba(0,0,0,.25);border-radius:8px;padding:12px;margin-bottom:10px;border-left:4px solid}
-.ai.roja{border-color:#ff6b6b}.ai.amarilla{border-color:#feca57}.ai.temprana{border-color:#48dbfb}
-.ah{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px}
-.at{padding:3px 10px;border-radius:12px;font-size:.75em;font-weight:700;text-transform:uppercase}
-.at.roja{background:#ff6b6b}.at.amarilla{background:#feca57;color:#333}.at.temprana{background:#48dbfb;color:#333}
-.af{color:#95a5a6;font-size:.8em}.au{font-weight:700;margin-bottom:4px}.ac{color:#bdc3c7;font-size:.85em;margin-bottom:4px}
-.ad{font-size:.8em;color:#95a5a6}.ad a{color:#48dbfb;text-decoration:none}
-.cg{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:600px){.cg{grid-template-columns:1fr}}
-.cb{background:rgba(0,0,0,.2);border-radius:8px;padding:12px}.cb h3{color:#48dbfb;font-size:.9em;margin-bottom:8px}
-.ci{padding:8px;margin-bottom:6px;border-radius:6px;font-size:.85em}
-.ci.nueva{background:rgba(46,204,113,.2);border-left:3px solid #2ecc71}
-.ci.actualizada{background:rgba(241,196,15,.2);border-left:3px solid #f1c40f}
-.ci.cancelada{background:rgba(149,165,166,.2);border-left:3px solid #95a5a6}
-.ft{text-align:center;padding:15px;color:#95a5a6;font-size:.8em}.ft a{color:#48dbfb}
-::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:rgba(0,0,0,.2)}::-webkit-scrollbar-thumb{background:#48dbfb;border-radius:3px}
-</style></head><body>
-<div class="hdr"><h1>🚨 Monitor SENAPRED v5.4</h1><p>Servicio Nacional de Prevención y Respuesta ante Desastres</p>
-<div class="upd"><span id="ua">Cargando...</span></div><div class="ar">🔄 <span id="cd">30</span>s</div></div>
-<div class="sg">
-<div class="sc tot"><h3>Total</h3><div class="sn" id="st">0</div></div>
-<div class="sc r"><h3>🔴 Rojas</h3><div class="sn" id="sr">0</div></div>
-<div class="sc a"><h3>🟡 Amarillas</h3><div class="sn" id="sa">0</div></div>
-<div class="sc t"><h3>🟢 Tempranas</h3><div class="sn" id="se">0</div></div>
-</div>
-<div class="mg"><div>
-<div class="sec"><h2>🗺️ Estado por Región</h2>
-<div class="ley"><div class="li"><div class="lc r"></div>Roja</div><div class="li"><div class="lc a"></div>Amarilla</div><div class="li"><div class="lc t"></div>Temprana</div><div class="li"><div class="lc s"></div>Sin Alertas</div></div>
-<div class="rg" id="mr"></div></div>
-<div class="sec"><h2>📊 Estadísticas</h2><div class="cg">
-<div class="cb"><h3>Por Tipo</h3><canvas id="ct"></canvas></div>
-<div class="cb"><h3>Por Amenaza</h3><canvas id="cc"></canvas></div>
-</div></div></div>
-<div><div class="sec"><h2>📋 Alertas Activas</h2><div class="al" id="la">Cargando...</div></div>
-<div class="sec"><h2>🔔 Cambios Recientes</h2><div id="lc">Sin cambios</div></div></div></div>
-<div class="ft"><p>Fuente: <a href="https://senapred.cl/alertas/" target="_blank">senapred.cl</a> | 📞 CONAF 130 | Bomberos 132 | Carabineros 133</p></div>
-<script src="datos_alertas.js"></script>
-<script>
-let ch={};function ld(){if(typeof D==='undefined'){setTimeout(ld,500);return}
-document.getElementById('st').textContent=D.stats.total;
-document.getElementById('sr').textContent=D.stats.rojas;
-document.getElementById('sa').textContent=D.stats.amarillas;
-document.getElementById('se').textContent=D.stats.tempranas;
-document.getElementById('ua').textContent='Actualizado: '+D.stats.ultima_actualizacion;
-let h='';D.regiones.forEach(r=>{let i=D.estado_regiones[r]||{estado:'sin_alerta'};
-let e=i.estado==='sin_alerta'?'sin':i.estado;
-let s=i.estado==='sin_alerta'?'✓ OK':[i.rojas&&i.rojas+'R',i.amarillas&&i.amarillas+'A',i.tempranas&&i.tempranas+'T'].filter(Boolean).join(' ');
-h+='<div class="ri '+e+'"><span>'+r+'</span><span class="rs">'+s+'</span></div>';});
-document.getElementById('mr').innerHTML=h;
-h='';if(!D.alertas.length){h='<div style="text-align:center;padding:20px;color:#2ecc71">✅ Sin alertas</div>';}
-else{D.alertas.sort((a,b)=>({roja:0,amarilla:1,temprana:2}[a.tipo]||3)-({roja:0,amarilla:1,temprana:2}[b.tipo]||3));
-D.alertas.forEach(a=>{h+='<div class="ai '+a.tipo+'"><div class="ah"><span class="at '+a.tipo+'">'+a.tipo+'</span><span class="af">📅 '+a.fecha+' ⏰ '+a.hora+'</span></div><div class="au">📍 '+a.region+' - '+a.comuna+'</div><div class="ac">⚠️ '+a.causa+(a.superficie?' | 🔥 '+a.superficie:'')+'</div><div class="ad">'+(a.recursos?'🚒 '+a.recursos+'<br>':'')+'<a href="'+a.url+'" target="_blank">Ver detalle →</a></div></div>';});}
-document.getElementById('la').innerHTML=h;
-h='';if(!D.cambios.length){h='<div style="text-align:center;padding:10px;color:#95a5a6">Sin cambios</div>';}
-else{D.cambios.slice(-10).reverse().forEach(c=>{let e={nueva:'🆕',actualizada:'🔄',cancelada:'❌'}[c.tipo_cambio]||'📌';
-h+='<div class="ci '+c.tipo_cambio+'"><strong>'+e+' '+c.tipo_cambio.toUpperCase()+'</strong> - '+c.fecha_hora+'<br>'+c.descripcion+'</div>';});}
-document.getElementById('lc').innerHTML=h;
-let x=id=>document.getElementById(id).getContext('2d');
-if(ch.t)ch.t.destroy();ch.t=new Chart(x('ct'),{type:'doughnut',data:{labels:['Roja','Amarilla','Temprana'],datasets:[{data:[D.stats.rojas,D.stats.amarillas,D.stats.tempranas],backgroundColor:['#ff6b6b','#feca57','#48dbfb']}]},options:{plugins:{legend:{labels:{color:'#fff'}}}}});
-if(ch.c)ch.c.destroy();let cs=Object.entries(D.por_causa).sort((a,b)=>b[1]-a[1]);
-ch.c=new Chart(x('cc'),{type:'bar',data:{labels:cs.map(c=>c[0].substring(0,12)),datasets:[{data:cs.map(c=>c[1]),backgroundColor:['#ff6b6b','#feca57','#48dbfb','#a29bfe','#fd79a8']}]},options:{indexAxis:'y',plugins:{legend:{display:false}},scales:{y:{ticks:{color:'#fff'},grid:{display:false}},x:{ticks:{color:'#fff'},grid:{color:'rgba(255,255,255,0.1)'}}}}});}
-let c=30;setInterval(()=>{c--;document.getElementById('cd').textContent=c;if(c<=0){c=30;location.reload();}},1000);ld();
-</script></body></html>'''
-        with open(CONFIG['archivo_html'], 'w', encoding='utf-8') as f:
+        with open(CONFIG["archivos"]["datos_js"], 'w', encoding='utf-8') as f:
+            f.write(f"const DATA={json.dumps(datos, ensure_ascii=False)};")
+        
+        self._generar_html()
+        print(f"📊 Dashboard: {CONFIG['archivos']['dashboard']}")
+    
+    def _generar_html(self):
+        html = '''<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SENAPRED Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-dark: #111217;
+            --bg-panel: #181b1f;
+            --bg-card: #1e2228;
+            --border: #2a2e35;
+            --text: #d8dadd;
+            --text-dim: #8b8d91;
+            --green: #73bf69;
+            --yellow: #fade2a;
+            --orange: #ff9830;
+            --red: #f2495c;
+            --blue: #5794f2;
+            --purple: #b877d9;
+        }
+        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+            font-size: 14px;
+        }
+        
+        /* Header */
+        .header {
+            background: var(--bg-panel);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        
+        .logo {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--orange);
+        }
+        
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            background: var(--bg-card);
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--green);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+        
+        /* Main Grid */
+        .main {
+            padding: 16px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            grid-template-rows: auto auto 1fr;
+            gap: 12px;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+        
+        @media (max-width: 1200px) {
+            .main { grid-template-columns: repeat(2, 1fr); }
+        }
+        
+        @media (max-width: 768px) {
+            .main { grid-template-columns: 1fr; }
+        }
+        
+        /* Stat Cards */
+        .stat-card {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 16px;
+        }
+        
+        .stat-card-header {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        
+        .stat-card-value {
+            font-size: 32px;
+            font-weight: 500;
+            line-height: 1;
+        }
+        
+        .stat-card-value.red { color: var(--red); }
+        .stat-card-value.yellow { color: var(--yellow); }
+        .stat-card-value.blue { color: var(--blue); }
+        .stat-card-value.green { color: var(--green); }
+        
+        .stat-card-sub {
+            font-size: 11px;
+            color: var(--text-dim);
+            margin-top: 4px;
+        }
+        
+        /* Panel */
+        .panel {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .panel-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            font-weight: 500;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .panel-body {
+            padding: 12px;
+        }
+        
+        /* Tabla de alertas */
+        .alerts-panel {
+            grid-column: span 2;
+            grid-row: span 2;
+        }
+        
+        .alert-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .alert-table th {
+            text-align: left;
+            padding: 8px 12px;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--text-dim);
+            font-weight: 500;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .alert-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+        }
+        
+        .alert-table tr:hover {
+            background: var(--bg-card);
+        }
+        
+        .alert-table tbody {
+            display: block;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .alert-table thead, .alert-table tbody tr {
+            display: table;
+            width: 100%;
+            table-layout: fixed;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        
+        .badge-roja { background: var(--red); color: #fff; }
+        .badge-amarilla { background: var(--yellow); color: #000; }
+        .badge-temprana { background: var(--blue); color: #fff; }
+        
+        .link {
+            color: var(--blue);
+            text-decoration: none;
+        }
+        
+        .link:hover {
+            text-decoration: underline;
+        }
+        
+        /* Panel de regiones */
+        .regions-panel {
+            grid-column: span 2;
+        }
+        
+        .region-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+        }
+        
+        @media (max-width: 1200px) {
+            .region-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        
+        .region-item {
+            background: var(--bg-card);
+            border-radius: 4px;
+            padding: 10px 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            border-left: 3px solid var(--green);
+        }
+        
+        .region-item.roja { border-left-color: var(--red); background: rgba(242,73,92,0.1); }
+        .region-item.amarilla { border-left-color: var(--yellow); background: rgba(250,222,42,0.1); }
+        .region-item.temprana { border-left-color: var(--blue); background: rgba(87,148,242,0.1); }
+        
+        .region-name {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .region-count {
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+        }
+        
+        .region-item.ok .region-count { background: var(--green); color: #000; }
+        .region-item.roja .region-count { background: var(--red); }
+        .region-item.amarilla .region-count { background: var(--yellow); color: #000; }
+        .region-item.temprana .region-count { background: var(--blue); }
+        
+        /* Charts */
+        .charts-row {
+            grid-column: span 2;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+        
+        @media (max-width: 768px) {
+            .charts-row { grid-template-columns: 1fr; }
+        }
+        
+        .chart-container {
+            height: 200px;
+            position: relative;
+        }
+        
+        /* Activity log */
+        .activity-panel {
+            grid-column: span 2;
+        }
+        
+        .activity-list {
+            max-height: 250px;
+            overflow-y: auto;
+        }
+        
+        .activity-item {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        
+        .activity-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+        
+        .activity-icon.nueva { background: rgba(115,191,105,0.2); color: var(--green); }
+        .activity-icon.actualizada { background: rgba(255,152,48,0.2); color: var(--orange); }
+        .activity-icon.cancelada { background: rgba(139,141,145,0.2); color: var(--text-dim); }
+        
+        .activity-content {
+            flex: 1;
+        }
+        
+        .activity-text {
+            font-size: 13px;
+        }
+        
+        .activity-time {
+            font-size: 11px;
+            color: var(--text-dim);
+            margin-top: 2px;
+        }
+        
+        /* Footer */
+        .footer {
+            padding: 16px 24px;
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-dim);
+            border-top: 1px solid var(--border);
+        }
+        
+        .footer a {
+            color: var(--blue);
+            text-decoration: none;
+        }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-dark); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+        
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-dim);
+        }
+        
+        .empty-state-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-left">
+            <div class="logo">⚡ SENAPRED Monitor</div>
+            <div class="status-badge">
+                <span class="status-dot"></span>
+                <span>Activo</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <span id="last-update">Cargando...</span>
+            <span>|</span>
+            <span>Próxima actualización: <strong id="countdown">30</strong>s</span>
+        </div>
+    </header>
+    
+    <main class="main">
+        <!-- Stat Cards Row -->
+        <div class="stat-card">
+            <div class="stat-card-header">Total Alertas</div>
+            <div class="stat-card-value" id="stat-total">0</div>
+            <div class="stat-card-sub" id="stat-regiones">0 regiones afectadas</div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-card-header">Alertas Rojas</div>
+            <div class="stat-card-value red" id="stat-rojas">0</div>
+            <div class="stat-card-sub">Máxima prioridad</div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-card-header">Alertas Amarillas</div>
+            <div class="stat-card-value yellow" id="stat-amarillas">0</div>
+            <div class="stat-card-sub">Prioridad media</div>
+        </div>
+        
+        <div class="stat-card">
+            <div class="stat-card-header">Alertas Tempranas</div>
+            <div class="stat-card-value blue" id="stat-tempranas">0</div>
+            <div class="stat-card-sub">Preventivas</div>
+        </div>
+        
+        <!-- Alerts Table -->
+        <div class="panel alerts-panel">
+            <div class="panel-header">
+                <span>📋 Alertas Activas</span>
+                <span id="alert-count" style="color: var(--text-dim)">0 alertas</span>
+            </div>
+            <div class="panel-body" style="padding: 0;">
+                <table class="alert-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 80px;">Tipo</th>
+                            <th style="width: 140px;">Región</th>
+                            <th>Causa</th>
+                            <th style="width: 90px;">Fecha</th>
+                            <th style="width: 60px;">Link</th>
+                        </tr>
+                    </thead>
+                    <tbody id="alerts-body">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Regions Panel -->
+        <div class="panel regions-panel">
+            <div class="panel-header">
+                <span>🗺️ Estado por Región</span>
+            </div>
+            <div class="panel-body">
+                <div class="region-grid" id="regions-grid">
+                </div>
+            </div>
+        </div>
+        
+        <!-- Charts Row -->
+        <div class="charts-row">
+            <div class="panel">
+                <div class="panel-header">Por Tipo de Alerta</div>
+                <div class="panel-body">
+                    <div class="chart-container">
+                        <canvas id="chart-tipos"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <div class="panel-header">Por Tipo de Amenaza</div>
+                <div class="panel-body">
+                    <div class="chart-container">
+                        <canvas id="chart-causas"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Activity Panel -->
+        <div class="panel activity-panel">
+            <div class="panel-header">
+                <span>🔔 Actividad Reciente</span>
+            </div>
+            <div class="panel-body" style="padding: 0;">
+                <div class="activity-list" id="activity-list">
+                </div>
+            </div>
+        </div>
+    </main>
+    
+    <footer class="footer">
+        <p>Datos de <a href="https://senapred.cl/alertas/" target="_blank">SENAPRED</a> | 
+           Emergencias: CONAF 130 • Bomberos 132 • Carabineros 133 • Ambulancia 131</p>
+    </footer>
+    
+    <script src="datos_alertas.js"></script>
+    <script>
+        let charts = {};
+        
+        function init() {
+            if (typeof DATA === 'undefined') {
+                setTimeout(init, 500);
+                return;
+            }
+            
+            // Stats
+            document.getElementById('stat-total').textContent = DATA.stats.total;
+            document.getElementById('stat-rojas').textContent = DATA.stats.rojas;
+            document.getElementById('stat-amarillas').textContent = DATA.stats.amarillas;
+            document.getElementById('stat-tempranas').textContent = DATA.stats.tempranas;
+            document.getElementById('stat-regiones').textContent = DATA.stats.regiones_afectadas + ' regiones afectadas';
+            document.getElementById('last-update').textContent = 'Actualizado: ' + DATA.stats.ultima_actualizacion;
+            document.getElementById('alert-count').textContent = DATA.stats.total + ' alertas';
+            
+            // Alerts table
+            const tbody = document.getElementById('alerts-body');
+            if (DATA.alertas.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5"><div class="empty-state"><div class="empty-state-icon">✅</div><div>Sin alertas activas</div></div></td></tr>';
+            } else {
+                const sorted = DATA.alertas.sort((a, b) => {
+                    const order = {roja: 0, amarilla: 1, temprana: 2};
+                    return (order[a.tipo] || 3) - (order[b.tipo] || 3);
+                });
+                tbody.innerHTML = sorted.map(a => `
+                    <tr>
+                        <td><span class="badge badge-${a.tipo}">${a.tipo}</span></td>
+                        <td>${a.region}</td>
+                        <td>${a.causa}${a.superficie ? ' <span style="color:var(--text-dim)">(' + a.superficie + ')</span>' : ''}</td>
+                        <td>${a.fecha}</td>
+                        <td><a href="${a.url}" target="_blank" class="link">Ver →</a></td>
+                    </tr>
+                `).join('');
+            }
+            
+            // Regions grid
+            const rgrid = document.getElementById('regions-grid');
+            rgrid.innerHTML = DATA.regiones.map(r => {
+                const info = DATA.estado_regiones[r] || {estado: 'ok', total: 0};
+                return `
+                    <div class="region-item ${info.estado}">
+                        <span class="region-name">${r}</span>
+                        <span class="region-count">${info.estado === 'ok' ? '✓' : info.total}</span>
+                    </div>
+                `;
+            }).join('');
+            
+            // Activity log
+            const alist = document.getElementById('activity-list');
+            if (DATA.cambios.length === 0) {
+                alist.innerHTML = '<div class="empty-state"><div>Sin actividad reciente</div></div>';
+            } else {
+                const icons = {nueva: '➕', actualizada: '🔄', cancelada: '❌'};
+                alist.innerHTML = DATA.cambios.slice().reverse().map(c => `
+                    <div class="activity-item">
+                        <div class="activity-icon ${c.tipo_cambio}">${icons[c.tipo_cambio] || '•'}</div>
+                        <div class="activity-content">
+                            <div class="activity-text">${c.descripcion}</div>
+                            <div class="activity-time">${c.fecha_hora}</div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+            
+            // Charts
+            Chart.defaults.color = '#8b8d91';
+            Chart.defaults.borderColor = '#2a2e35';
+            
+            const ctx1 = document.getElementById('chart-tipos').getContext('2d');
+            if (charts.tipos) charts.tipos.destroy();
+            charts.tipos = new Chart(ctx1, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Rojas', 'Amarillas', 'Tempranas'],
+                    datasets: [{
+                        data: [DATA.stats.rojas, DATA.stats.amarillas, DATA.stats.tempranas],
+                        backgroundColor: ['#f2495c', '#fade2a', '#5794f2'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { boxWidth: 12, padding: 12 }
+                        }
+                    }
+                }
+            });
+            
+            const ctx2 = document.getElementById('chart-causas').getContext('2d');
+            if (charts.causas) charts.causas.destroy();
+            const causas = Object.entries(DATA.por_causa).sort((a, b) => b[1] - a[1]).slice(0, 6);
+            charts.causas = new Chart(ctx2, {
+                type: 'bar',
+                data: {
+                    labels: causas.map(c => c[0].length > 15 ? c[0].substring(0, 15) + '...' : c[0]),
+                    datasets: [{
+                        data: causas.map(c => c[1]),
+                        backgroundColor: ['#f2495c', '#ff9830', '#fade2a', '#73bf69', '#5794f2', '#b877d9'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { color: '#2a2e35' }, ticks: { stepSize: 1 } },
+                        y: { grid: { display: false } }
+                    }
+                }
+            });
+        }
+        
+        // Countdown
+        let count = 30;
+        setInterval(() => {
+            count--;
+            document.getElementById('countdown').textContent = count;
+            if (count <= 0) {
+                count = 30;
+                location.reload();
+            }
+        }, 1000);
+        
+        init();
+    </script>
+</body>
+</html>'''
+        
+        with open(CONFIG["archivos"]["dashboard"], 'w', encoding='utf-8') as f:
             f.write(html)
-        print(f"📊 Dashboard actualizado: {CONFIG['archivo_html']}")
+
+
+class ResumenDiario:
+    def __init__(self, alertas, cambios):
+        self.alertas = alertas
+        self.cambios = cambios
+        self.fecha = datetime.now().strftime("%Y-%m-%d")
+    
+    def generar(self):
+        if not CONFIG["resumen_diario"]["activado"]: return
+        fn = f"{CONFIG['archivos']['resumen']}_{self.fecha}.html"
+        r = sum(1 for a in self.alertas if a.tipo=='roja')
+        am = sum(1 for a in self.alertas if a.tipo=='amarilla')
+        t = sum(1 for a in self.alertas if a.tipo=='temprana')
+        hoy = datetime.now().strftime("%d/%m/%Y")
+        ch = [c for c in self.cambios if hoy in c.fecha_hora]
+        
+        html = f'''<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Resumen {self.fecha}</title>
+<style>
+body {{ font-family: -apple-system, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background: #f5f5f5; }}
+.header {{ background: #1a1a2e; color: #fff; padding: 24px; border-radius: 8px; margin-bottom: 20px; }}
+.header h1 {{ margin: 0 0 8px 0; }}
+.stats {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }}
+.stat {{ background: #fff; padding: 16px; border-radius: 8px; text-align: center; }}
+.stat-num {{ font-size: 28px; font-weight: 700; }}
+.stat-num.r {{ color: #f2495c; }}
+.stat-num.a {{ color: #fade2a; }}
+.stat-num.t {{ color: #5794f2; }}
+.section {{ background: #fff; padding: 16px; border-radius: 8px; margin-bottom: 16px; }}
+.section h2 {{ margin: 0 0 12px 0; font-size: 16px; }}
+table {{ width: 100%; border-collapse: collapse; }}
+th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #eee; }}
+th {{ background: #f8f9fa; font-size: 12px; text-transform: uppercase; }}
+.badge {{ padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }}
+.badge.roja {{ background: #f2495c; color: #fff; }}
+.badge.amarilla {{ background: #fade2a; }}
+.badge.temprana {{ background: #5794f2; color: #fff; }}
+</style></head>
+<body>
+<div class="header">
+    <h1>📊 Resumen Diario SENAPRED</h1>
+    <p>Fecha: {self.fecha}</p>
+</div>
+<div class="stats">
+    <div class="stat"><div class="stat-num">{len(self.alertas)}</div><div>Total</div></div>
+    <div class="stat"><div class="stat-num r">{r}</div><div>Rojas</div></div>
+    <div class="stat"><div class="stat-num a">{am}</div><div>Amarillas</div></div>
+    <div class="stat"><div class="stat-num t">{t}</div><div>Tempranas</div></div>
+</div>
+<div class="section">
+    <h2>Alertas Activas</h2>
+    <table>
+        <tr><th>Tipo</th><th>Región</th><th>Causa</th><th>Fecha</th></tr>
+        {''.join(f'<tr><td><span class="badge {a.tipo}">{a.tipo.upper()}</span></td><td>{a.region}</td><td>{a.causa}</td><td>{a.fecha}</td></tr>' for a in self.alertas) or '<tr><td colspan="4" style="text-align:center;color:#888;">Sin alertas</td></tr>'}
+    </table>
+</div>
+<div class="section">
+    <h2>Cambios del Día ({len(ch)})</h2>
+    <table>
+        <tr><th>Tipo</th><th>Hora</th><th>Descripción</th></tr>
+        {''.join(f'<tr><td>{c.tipo_cambio}</td><td>{c.fecha_hora}</td><td>{c.descripcion}</td></tr>' for c in ch) or '<tr><td colspan="3" style="text-align:center;color:#888;">Sin cambios</td></tr>'}
+    </table>
+</div>
+<p style="text-align:center;color:#888;font-size:12px;">Monitor SENAPRED v6.1</p>
+</body></html>'''
+        
+        with open(fn, 'w', encoding='utf-8') as f: 
+            f.write(html)
+        log(f"📋 Resumen: {fn}")
 
 
 class Monitor:
-    def __init__(self, intervalo: int = 300, con_sonido: bool = False, dias_max: int = 14):
-        self.intervalo = intervalo
-        self.con_sonido = con_sonido
-        self.scraper = Scraper(dias_max)
+    def __init__(self, intervalo=None, con_sonido=None, dias_max=None):
+        self.intervalo = intervalo or CONFIG["general"]["intervalo_segundos"]
+        self.con_sonido = con_sonido if con_sonido is not None else CONFIG["notificaciones"]["sonido_activado"]
+        self.dias_max = dias_max or CONFIG["general"]["dias_antiguedad"]
+        self.scraper = Scraper(self.dias_max)
         self.dashboard = Dashboard()
         self.alertas: Dict[str, Alerta] = {}
         self.cambios: List[Cambio] = []
-        self.dias_max = dias_max
+        self.ultimo_resumen = None
         self._cargar()
     
     def _cargar(self):
         try:
-            if os.path.exists(CONFIG['archivo_estado']):
-                with open(CONFIG['archivo_estado'], 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    for a in data.get('alertas', []): self.alertas[a['id']] = Alerta(**a)
-                    for c in data.get('cambios', []): self.cambios.append(Cambio(**c))
-                log(f"Cargado: {len(self.alertas)} alertas previas")
+            ef = CONFIG["archivos"]["estado"]
+            if Path(ef).exists():
+                with open(ef, 'r', encoding='utf-8') as f:
+                    d = json.load(f)
+                    for a in d.get('alertas', []): 
+                        self.alertas[a['id']] = Alerta(**a)
+                    for c in d.get('cambios', []): 
+                        self.cambios.append(Cambio(**c))
+                log(f"Cargado: {len(self.alertas)} alertas")
         except: pass
     
     def _guardar(self):
         try:
-            with open(CONFIG['archivo_estado'], 'w', encoding='utf-8') as f:
-                json.dump({'alertas': [a.to_dict() for a in self.alertas.values()], 'cambios': [asdict(c) for c in self.cambios[-100:]]}, f, ensure_ascii=False)
+            with open(CONFIG["archivos"]["estado"], 'w', encoding='utf-8') as f:
+                json.dump({
+                    'alertas': [a.to_dict() for a in self.alertas.values()], 
+                    'cambios': [asdict(c) for c in self.cambios[-100:]]
+                }, f, ensure_ascii=False)
         except: pass
     
     def _detectar_cambios(self, nuevas):
@@ -423,98 +1015,154 @@ class Monitor:
         
         for a in nuevas:
             if a.id not in self.alertas:
-                n.append(a); self.alertas[a.id] = a
+                n.append(a)
+                self.alertas[a.id] = a
                 self.cambios.append(Cambio(a.id, "nueva", ahora, f"{a.tipo.upper()}: {a.region} - {a.causa}"))
             elif a.contenido_hash != self.alertas[a.id].contenido_hash:
-                u.append(a); self.alertas[a.id] = a
+                u.append(a)
+                self.alertas[a.id] = a
                 self.cambios.append(Cambio(a.id, "actualizada", ahora, f"{a.tipo.upper()}: {a.region}"))
         
         for id in list(self.alertas.keys()):
             if id not in ids and self.alertas[id].estado_monitor != "cancelada":
-                self.alertas[id].estado_monitor = "cancelada"; c.append(self.alertas[id])
+                self.alertas[id].estado_monitor = "cancelada"
+                c.append(self.alertas[id])
                 self.cambios.append(Cambio(id, "cancelada", ahora, f"{self.alertas[id].tipo.upper()}: {self.alertas[id].region}"))
+        
         return n, u, c
+    
+    def _check_resumen(self):
+        if not CONFIG["resumen_diario"]["activado"]: return
+        try:
+            hg = CONFIG["resumen_diario"]["hora_generacion"]
+            ahora = datetime.now()
+            ho = datetime.strptime(hg, "%H:%M").time()
+            if self.ultimo_resumen == ahora.date(): return
+            if ahora.time() >= ho:
+                act = [a for a in self.alertas.values() if a.estado_monitor != 'cancelada']
+                ResumenDiario(act, self.cambios).generar()
+                self.ultimo_resumen = ahora.date()
+        except: pass
     
     def ejecutar(self):
         os.system('cls' if sys.platform == 'win32' else 'clear')
-        print(f"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                    🚨 MONITOR SENAPRED v5.4 🚨                               ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-  ⏱️ Cada {self.intervalo//60} min | 📆 Últimos {self.dias_max} días | 🔊 {'ON' if self.con_sonido else 'OFF'}
-  💡 Abre {CONFIG['archivo_html']} en tu navegador
-        """)
+        sil = ""
+        if CONFIG["notificaciones"]["modo_silencioso"]["activado"]:
+            ms = CONFIG["notificaciones"]["modo_silencioso"]
+            sil = f" | 🔇 {ms['hora_inicio']}-{ms['hora_fin']}"
+        flt = f" | 🗺️ {len(CONFIG['filtros']['regiones'])} reg" if CONFIG["filtros"]["regiones"] else ""
         
-        activas = [a for a in self.alertas.values() if a.estado_monitor != 'cancelada']
-        self.dashboard.generar(activas, self.cambios, datetime.now().strftime("%d/%m/%Y %H:%M"))
+        print(f'''
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    ⚡ MONITOR SENAPRED v6.1 ⚡                                ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+  ⏱️  Intervalo: {self.intervalo//60} min | 📆 Días: {self.dias_max} | 🔊 Sonido: {'ON' if self.con_sonido else 'OFF'}{sil}{flt}
+  📊 Dashboard: {CONFIG['archivos']['dashboard']}
+        ''')
+        
+        act = [a for a in self.alertas.values() if a.estado_monitor != 'cancelada']
+        self.dashboard.generar(act, self.cambios, datetime.now().strftime("%d/%m/%Y %H:%M"))
         
         while True:
             try:
-                print(f"\n🔄 Consultando... [{datetime.now().strftime('%H:%M:%S')}]")
+                self._check_resumen()
+                st = " 🔇" if en_horario_silencioso() else ""
+                print(f"\n🔄 Consultando...{st} [{datetime.now().strftime('%H:%M:%S')}]")
+                
                 alertas = self.scraper.obtener_alertas()
                 n, u, c = self._detectar_cambios(alertas)
                 
                 if n:
                     print(f"🆕 {len(n)} NUEVA(S)")
-                    for a in n: print(f"   🔴 {a.region} - {a.causa}")
+                    for a in n: 
+                        print(f"   {'🔴' if a.tipo=='roja' else '🟡' if a.tipo=='amarilla' else '🔵'} {a.region} - {a.causa}")
                     if self.con_sonido: sonido("nueva")
-                    for a in n: notificar(f"🆕 {a.tipo.upper()}", f"{a.region}\n{a.causa}", a.tipo=='roja')
+                    for a in n: 
+                        notificar(f"🆕 {a.tipo.upper()}", f"{a.region}\n{a.causa}", a.tipo=='roja')
+                
                 if u: 
                     print(f"🔄 {len(u)} ACTUALIZADA(S)")
                     if self.con_sonido: sonido("actualizada")
+                
                 if c: 
                     print(f"❌ {len(c)} CANCELADA(S)")
                     if self.con_sonido: sonido("cancelada")
                 
-                if not n and not u and not c:
-                    print(f"✓ Sin cambios")
+                if not n and not u and not c: 
+                    print("✓ Sin cambios")
                 
                 self._guardar()
-                activas = [a for a in self.alertas.values() if a.estado_monitor != 'cancelada']
-                self.dashboard.generar(activas, self.cambios, datetime.now().strftime("%d/%m/%Y %H:%M"))
-                print(f"📋 Total: {len(activas)} alertas activas")
+                act = [a for a in self.alertas.values() if a.estado_monitor != 'cancelada']
+                self.dashboard.generar(act, self.cambios, datetime.now().strftime("%d/%m/%Y %H:%M"))
                 
-                print(f"⏳ Próxima en {self.intervalo//60} min...")
+                print(f"📋 Total: {len(act)} alertas activas")
+                print(f"⏳ Próxima consulta en {self.intervalo//60} min...")
                 time.sleep(self.intervalo)
-            except KeyboardInterrupt:
-                print("\n👋 Detenido"); self._guardar(); break
-            except Exception as e:
-                log(f"Error: {e}", "ERROR"); time.sleep(60)
+                
+            except KeyboardInterrupt: 
+                print("\n👋 Monitor detenido")
+                self._guardar()
+                break
+            except Exception as e: 
+                log(f"Error: {e}", "ERROR")
+                time.sleep(60)
 
 
 def main():
-    p = argparse.ArgumentParser(description='Monitor SENAPRED v5.4')
-    p.add_argument('--monitor', '-m', action='store_true')
-    p.add_argument('--intervalo', '-i', type=int, default=300)
-    p.add_argument('--sound', '-s', action='store_true')
-    p.add_argument('--dias', '-d', type=int, default=14)
+    p = argparse.ArgumentParser(description='Monitor SENAPRED v6.1')
+    p.add_argument('--monitor', '-m', action='store_true', help='Modo monitoreo continuo')
+    p.add_argument('--intervalo', '-i', type=int, help='Segundos entre consultas')
+    p.add_argument('--sound', '-s', action='store_true', help='Activar sonido')
+    p.add_argument('--dias', '-d', type=int, help='Días de antigüedad')
+    p.add_argument('--resumen', '-r', action='store_true', help='Generar resumen ahora')
+    p.add_argument('--config', '-c', action='store_true', help='Ver configuración')
     args = p.parse_args()
     
-    if not SELENIUM_OK or not BS4_OK:
-        print("❌ pip install selenium webdriver-manager beautifulsoup4 plyer"); return
+    if not SELENIUM_OK or not BS4_OK: 
+        print("❌ Instalar: pip install selenium webdriver-manager beautifulsoup4 plyer")
+        return
     
-    CONFIG['sonido_alerta'] = args.sound
+    if args.config: 
+        print(json.dumps(CONFIG, ensure_ascii=False, indent=2))
+        return
     
-    if args.monitor:
+    if args.resumen:
+        try:
+            with open(CONFIG["archivos"]["estado"], 'r', encoding='utf-8') as f:
+                d = json.load(f)
+                al = [Alerta(**a) for a in d.get('alertas', []) if a.get('estado_monitor') != 'cancelada']
+                cm = [Cambio(**c) for c in d.get('cambios', [])]
+                ResumenDiario(al, cm).generar()
+        except Exception as e: 
+            print(f"Error: {e}")
+        return
+    
+    if args.sound: 
+        CONFIG["notificaciones"]["sonido_activado"] = True
+    
+    if args.monitor: 
         Monitor(args.intervalo, args.sound, args.dias).ejecutar()
     else:
-        print(f"\n🔍 Consultando SENAPRED (últimos {args.dias} días)...\n")
-        alertas = Scraper(args.dias).obtener_alertas()
+        dias = args.dias or CONFIG['general']['dias_antiguedad']
+        print(f"\n🔍 Consultando SENAPRED (últimos {dias} días)...\n")
+        alertas = Scraper(dias).obtener_alertas()
         
-        print(f"\n{'='*60}")
-        print(f"🚨 {len(alertas)} ALERTAS ENCONTRADAS")
-        print(f"{'='*60}\n")
+        print(f"\n{'═'*60}")
+        print(f"  ⚡ {len(alertas)} ALERTAS ENCONTRADAS")
+        print(f"{'═'*60}\n")
         
-        if alertas:
-            for a in sorted(alertas, key=lambda x: (0 if x.tipo=='roja' else 1 if x.tipo=='amarilla' else 2)):
-                print(f"{'🔴' if a.tipo=='roja' else '🟡' if a.tipo=='amarilla' else '🟢'} [{a.tipo.upper()}] {a.region}")
-                print(f"   📅 {a.fecha} | ⚠️ {a.causa}")
-                if a.superficie: print(f"   🔥 {a.superficie}")
-                print()
+        for a in sorted(alertas, key=lambda x: (0 if x.tipo=='roja' else 1 if x.tipo=='amarilla' else 2)):
+            icon = '🔴' if a.tipo=='roja' else '🟡' if a.tipo=='amarilla' else '🔵'
+            print(f"{icon} [{a.tipo.upper():8}] {a.region}")
+            print(f"   📅 {a.fecha} | ⚠️  {a.causa}")
+            if a.superficie:
+                print(f"   🔥 {a.superficie}")
+            print()
         
         Dashboard().generar(alertas, [], datetime.now().strftime("%d/%m/%Y %H:%M"))
-        print(f"{'='*60}")
+        print(f"{'═'*60}")
+        print(f"📊 Dashboard generado: {CONFIG['archivos']['dashboard']}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
     main()

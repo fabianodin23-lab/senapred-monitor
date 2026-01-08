@@ -1,0 +1,37 @@
+{
+  "general": {
+    "intervalo_segundos": 300,
+    "dias_antiguedad": 14,
+    "espera_pagina": 6,
+    "espera_detalle": 4
+  },
+  "notificaciones": {
+    "sonido_activado": true,
+    "notificacion_escritorio": true,
+    "modo_silencioso": {
+      "activado": false,
+      "hora_inicio": "23:00",
+      "hora_fin": "07:00"
+    }
+  },
+  "filtros": {
+    "regiones": [],
+    "tipos_alerta": [
+      "roja",
+      "amarilla",
+      "temprana"
+    ]
+  },
+  "resumen_diario": {
+    "activado": true,
+    "hora_generacion": "08:00",
+    "formato": "html"
+  },
+  "archivos": {
+    "estado": "estado_alertas.json",
+    "dashboard": "dashboard_senapred.html",
+    "datos_js": "datos_alertas.js",
+    "log": "log_alertas.csv",
+    "resumen": "resumen_diario"
+  }
+}

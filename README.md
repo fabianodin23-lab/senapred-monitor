@@ -1,4 +1,4 @@
-# 🚨 Monitor SENAPRED Chile v5.2
+# ⚡ Monitor SENAPRED Chile v6.1
 
 <p align="center">
   <strong>Sistema de monitoreo en tiempo real de alertas de emergencia de SENAPRED Chile</strong>
@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
-  <img src="https://img.shields.io/badge/version-5.2-brightgreen.svg" alt="Version 5.2">
+  <img src="https://img.shields.io/badge/version-6.1-brightgreen.svg" alt="Version 6.1">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT">
   <img src="https://img.shields.io/badge/SENAPRED-Chile-red.svg" alt="SENAPRED Chile">
@@ -32,13 +32,15 @@
 | Característica | Descripción |
 |----------------|-------------|
 | 📡 **Monitoreo en tiempo real** | Consulta automática cada X minutos |
-| 🗺️ **Mapa de 16 regiones** | Visualiza el estado de todo Chile |
+| 📊 **Dashboard Grafana-style** | Interfaz dark theme profesional |
 | 🔔 **Notificaciones** | Alertas sonoras y de escritorio |
-| 📊 **Dashboard HTML** | Gráficos interactivos auto-actualizables |
-| 🔍 **Información completa** | Extrae todos los detalles de cada alerta |
+| 🔇 **Modo silencioso** | Sin sonido en horarios nocturnos |
+| 🗺️ **16 regiones** | Estado visual de todo Chile |
+| 📋 **Resumen diario** | Genera reporte HTML automático |
+| ⚙️ **Configurable** | Archivo `config.json` sin tocar código |
+| 📝 **Log persistente** | Historial completo en CSV |
 | 🆕 **Detección de cambios** | Nueva, actualizada, cancelada |
-| 📅 **Filtro por fecha** | Solo alertas de los últimos N días |
-| ✅ **Estado por región** | Verde = sin alertas, colores = alertas activas |
+| 🔍 **Filtros** | Por región y tipo de alerta |
 
 ### Información que extrae de cada alerta:
 - 📍 Región y comunas afectadas
@@ -106,6 +108,18 @@ python monitor_senapred.py --monitor --sound
 python monitor_senapred.py --monitor --sound --dias 7 --intervalo 120
 ```
 
+### Ver configuración actual
+
+```bash
+python monitor_senapred.py --config
+```
+
+### Generar resumen diario manual
+
+```bash
+python monitor_senapred.py --resumen
+```
+
 ---
 
 ## ⚙️ Opciones disponibles
@@ -116,6 +130,8 @@ python monitor_senapred.py --monitor --sound --dias 7 --intervalo 120
 | `--sound` | `-s` | Alertas sonoras | No |
 | `--dias N` | `-d N` | Días de antigüedad | 14 |
 | `--intervalo N` | `-i N` | Segundos entre consultas | 300 (5 min) |
+| `--config` | `-c` | Ver configuración actual | - |
+| `--resumen` | `-r` | Generar resumen diario | - |
 
 ### Ejemplos:
 
@@ -135,20 +151,88 @@ python monitor_senapred.py --dias 7
 
 ---
 
+## ⚙️ Configuración (config.json)
+
+Al ejecutar por primera vez se crea automáticamente `config.json`:
+
+```json
+{
+  "general": {
+    "intervalo_segundos": 300,
+    "dias_antiguedad": 14,
+    "espera_pagina": 6,
+    "espera_detalle": 4
+  },
+  "notificaciones": {
+    "sonido_activado": true,
+    "notificacion_escritorio": true,
+    "modo_silencioso": {
+      "activado": false,
+      "hora_inicio": "23:00",
+      "hora_fin": "07:00"
+    }
+  },
+  "filtros": {
+    "regiones": [],
+    "tipos_alerta": ["roja", "amarilla", "temprana"]
+  },
+  "resumen_diario": {
+    "activado": true,
+    "hora_generacion": "08:00",
+    "formato": "html"
+  }
+}
+```
+
+### Ejemplos de configuración:
+
+**Monitorear solo algunas regiones:**
+```json
+{
+  "filtros": {
+    "regiones": ["Metropolitana", "Valparaíso", "Biobío"]
+  }
+}
+```
+
+**Activar modo silencioso nocturno:**
+```json
+{
+  "notificaciones": {
+    "modo_silencioso": {
+      "activado": true,
+      "hora_inicio": "23:00",
+      "hora_fin": "07:00"
+    }
+  }
+}
+```
+
+**Solo alertas rojas y amarillas:**
+```json
+{
+  "filtros": {
+    "tipos_alerta": ["roja", "amarilla"]
+  }
+}
+```
+
+---
+
 ## 📊 Dashboard
 
-El monitor genera un **dashboard HTML interactivo** que se abre en tu navegador.
+El monitor genera un **dashboard HTML estilo Grafana** con tema oscuro profesional.
 
 **Archivo:** `dashboard_senapred.html`
 
 ### Incluye:
-- 🗺️ **Mapa de 16 regiones** con estado de cada una
-- ✅ **Regiones sin alertas** en verde
-- 📈 Gráfico por tipo de alerta (dona)
-- ⚠️ Gráfico por tipo de amenaza (barras)
-- 📋 Lista detallada de alertas activas
-- 🔔 Historial de cambios recientes
-- 🔄 Auto-refresh cada 30 segundos
+- 📈 **Stat Cards** - Total, Rojas, Amarillas, Tempranas
+- 📋 **Tabla de alertas** - Ordenadas por prioridad con links
+- 🗺️ **Estado por región** - Grid de 16 regiones con indicador visual
+- 📊 **Gráfico por tipo** - Distribución en dona
+- ⚠️ **Gráfico por causa** - Barras horizontales
+- 🔔 **Activity log** - Cambios recientes
+- 🔄 **Auto-refresh** cada 30 segundos
 
 ### Regiones de Chile (norte a sur):
 1. Arica y Parinacota
@@ -174,9 +258,12 @@ El monitor genera un **dashboard HTML interactivo** que se abre en tu navegador.
 
 | Archivo | Descripción |
 |---------|-------------|
+| `config.json` | Configuración del monitor |
 | `dashboard_senapred.html` | Dashboard visual interactivo |
 | `datos_alertas.js` | Datos JSON para el dashboard |
-| `estado_alertas.json` | Persistencia del estado del monitor |
+| `estado_alertas.json` | Persistencia del estado |
+| `log_alertas.csv` | Historial de eventos |
+| `resumen_diario_YYYY-MM-DD.html` | Resumen diario automático |
 
 ---
 
@@ -186,7 +273,7 @@ El monitor genera un **dashboard HTML interactivo** que se abre en tu navegador.
 |-------|-------|-------------|
 | 🔴 | **Alerta Roja** | Emergencia máxima |
 | 🟡 | **Alerta Amarilla** | Precaución elevada |
-| 🟢 | **Alerta Temprana Preventiva** | Monitoreo preventivo |
+| 🔵 | **Alerta Temprana** | Monitoreo preventivo |
 | ✅ | **Sin Alerta** | Región sin alertas vigentes |
 
 ---
@@ -205,21 +292,28 @@ El monitor genera un **dashboard HTML interactivo** que se abre en tu navegador.
 
 ## 📝 Changelog
 
-### v5.2 (Actual)
-- ✂️ **Código optimizado** - 25% más liviano
-- 🗺️ **Mapa de 16 regiones** - Visualiza todo Chile
-- ✅ **Indicador sin alertas** - Regiones en verde
-- 🎨 **Dashboard mejorado** - Mejor organización visual
-- 🧹 **Limpieza de código** - Eliminación de campos no utilizados
+### v6.1 (Actual)
+- 📊 **Dashboard Grafana-style** - Tema oscuro profesional
+- 🔇 **Modo silencioso** - Sin sonido en horarios configurables
+- 📋 **Resumen diario** - Genera reporte HTML automático
+- ⚙️ **config.json** - Configuración sin tocar código
+- 🗺️ **Filtro por región** - Monitorea solo las que necesitas
+- 📝 **Log CSV** - Historial persistente de eventos
+- 🧹 **Código limpio** - Eliminación de datos no utilizados
+
+### v5.2
+- 🗺️ Mapa de 16 regiones de Chile
+- ✅ Indicador de regiones sin alertas
+- 🎨 Dashboard mejorado
 
 ### v5.0
-- 📦 Extracción completa de datos de cada alerta
-- 🔄 Sistema de deduplicación de alertas
-- 📊 Dashboard con gráficos Chart.js
+- 📦 Extracción completa de datos
+- 🔄 Sistema de deduplicación
+- 📊 Dashboard con Chart.js
 
 ### v4.0
-- 💾 Persistencia de estado entre ejecuciones
-- 🔔 Notificaciones de escritorio Windows
+- 💾 Persistencia de estado
+- 🔔 Notificaciones de escritorio
 - 🔊 Alertas sonoras diferenciadas
 
 ---
