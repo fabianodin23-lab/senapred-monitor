@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MONITOR SENAPRED v5.2 - Optimizado
+MONITOR SENAPRED v5.4
+- ID único basado en hash de URL (evita colisiones)
+- Mejor captura de todas las alertas
 """
 
 import argparse, json, time, os, sys, re, hashlib
@@ -46,6 +48,11 @@ REGIONES = [
     'Valparaíso', 'Metropolitana', "O'Higgins", 'Maule', 'Ñuble', 'Biobío',
     'La Araucanía', 'Los Ríos', 'Los Lagos', 'Aysén', 'Magallanes'
 ]
+
+
+def generar_id(url: str) -> str:
+    """Genera ID único basado en hash MD5 de la URL completa"""
+    return hashlib.md5(url.lower().strip().encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -118,23 +125,36 @@ class Scraper:
             urls = self._obtener_urls()
             log(f"URLs encontradas: {len(urls)}")
             
-            alertas, procesadas = [], set()
+            alertas = []
+            ids_procesados = set()
+            
             for i, url in enumerate(urls):
-                if url.lower() in procesadas: continue
-                procesadas.add(url.lower())
+                # Generar ID único basado en URL
+                alerta_id = generar_id(url)
                 
+                # Evitar duplicados
+                if alerta_id in ids_procesados:
+                    continue
+                ids_procesados.add(alerta_id)
+                
+                # Filtrar por antigüedad
                 match = re.search(r'(\d{4})-(\d{2})-(\d{2})', url)
                 if match:
-                    dias = (datetime.now() - datetime(int(match[1]), int(match[2]), int(match[3]))).days
-                    if dias > self.dias_max: continue
+                    try:
+                        fecha_alerta = datetime(int(match[1]), int(match[2]), int(match[3]))
+                        dias = (datetime.now() - fecha_alerta).days
+                        if dias > self.dias_max:
+                            continue
+                    except:
+                        pass
                 
-                log(f"  [{i+1}/{len(urls)}] {url[-50:]}")
-                if alerta := self._extraer_alerta(url):
-                    if not any(a.id == alerta.id for a in alertas):
-                        alertas.append(alerta)
+                log(f"  [{i+1}/{len(urls)}] {url[-55:]}")
+                alerta = self._extraer_alerta(url, alerta_id)
+                if alerta:
+                    alertas.append(alerta)
                 time.sleep(0.5)
             
-            log(f"Total: {len(alertas)}")
+            log(f"Total: {len(alertas)} alertas capturadas")
             return alertas
         except Exception as e:
             log(f"Error: {e}", "ERROR")
@@ -163,7 +183,7 @@ class Scraper:
             log(f"Error URLs: {e}", "ERROR")
         return urls
     
-    def _extraer_alerta(self, url: str) -> Optional[Alerta]:
+    def _extraer_alerta(self, url: str, alerta_id: str) -> Optional[Alerta]:
         try:
             self.driver.get(url)
             time.sleep(CONFIG['espera_detalle'])
@@ -171,36 +191,87 @@ class Scraper:
             texto = BeautifulSoup(self.driver.page_source, 'html.parser').get_text(' ', strip=True)
             t = texto.lower()
             
-            tipo = 'roja' if 'alerta roja' in t else ('amarilla' if 'alerta amarilla' in t else ('temprana' if 'temprana' in t or 'preventiva' in t else None))
-            if not tipo: return None
+            # Detectar tipo
+            tipo = None
+            if 'alerta roja' in t:
+                tipo = 'roja'
+            elif 'alerta amarilla' in t:
+                tipo = 'amarilla'
+            elif 'temprana' in t or 'preventiva' in t:
+                tipo = 'temprana'
             
+            if not tipo:
+                log(f"    ⚠ Sin tipo detectado", "WARN")
+                return None
+            
+            # Extraer fecha/hora de URL
             match = re.search(r'(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})', url)
             fecha = f"{match[3]}/{match[2]}/{match[1]}" if match else datetime.now().strftime("%d/%m/%Y")
             hora = f"{match[4]}:{match[5]}" if match else "--:--"
             
-            region = next((r for r in REGIONES if r.lower() in t), "No especificada")
+            # Región
+            region = "No especificada"
+            for r in REGIONES:
+                if r.lower() in t:
+                    region = r
+                    break
             
-            m = re.search(r'comuna\s+de\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s]+?)(?:\s+por|\s+debido|,|\.)', texto, re.I)
-            comuna = m[1].strip().title() if m else "No especificada"
+            # Comuna
+            m = re.search(r'comuna[s]?\s+de\s+([A-Za-záéíóúñÁÉÍÓÚÑ\s,]+?)(?:\s+por|\s+debido|,\s+por|\.)', texto, re.I)
+            comuna = m[1].strip().title()[:50] if m else "No especificada"
             
-            causas = {'incendio': 'Incendio Forestal', 'calor': 'Calor Extremo', 'temperatura': 'Altas Temperaturas', 'sismo': 'Sismo', 'tsunami': 'Tsunami', 'temporal': 'Temporal'}
-            causa = next((v for k, v in causas.items() if k in t), "Emergencia")
+            # Causa - ampliado
+            causas = {
+                'incendio': 'Incendio Forestal', 
+                'calor': 'Calor Extremo', 
+                'temperatura': 'Altas Temperaturas', 
+                'sismo': 'Sismo', 
+                'tsunami': 'Tsunami', 
+                'temporal': 'Temporal',
+                'tormenta': 'Tormenta Eléctrica',
+                'eléctrica': 'Tormenta Eléctrica',
+                'electrica': 'Tormenta Eléctrica',
+                'volcán': 'Actividad Volcánica',
+                'volcan': 'Actividad Volcánica',
+                'volcánic': 'Actividad Volcánica',
+                'aluvión': 'Aluvión',
+                'aluvion': 'Aluvión',
+                'inundación': 'Inundación',
+                'inundacion': 'Inundación',
+                'marejada': 'Marejada',
+                'evento masivo': 'Evento Masivo',
+                'material peligroso': 'Material Peligroso',
+            }
+            causa = "Emergencia"
+            for k, v in causas.items():
+                if k in t:
+                    causa = v
+                    break
             
+            # Recursos
             recursos = []
-            for p, n in [(r'(\d+)\s*brigada', 'brigadas'), (r'(\d+)\s*helic', 'helicópteros')]:
+            for p, n in [(r'(\d+)\s*brigada', 'brigadas'), (r'(\d+)\s*helic', 'helicópteros'), (r'(\d+)\s*avion', 'aviones')]:
                 if m := re.search(p, t): recursos.append(f"{m[1]} {n}")
             
+            # Superficie
             m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:hect|ha)', t)
             superficie = f"{m[1]} ha" if m else ""
             
             return Alerta(
-                id=url.rstrip('/').split('/')[-1][:50],
-                url=url, tipo=tipo, region=region, comuna=comuna, causa=causa,
-                fecha=fecha, hora=hora, recursos=", ".join(recursos), superficie=superficie,
+                id=alerta_id,
+                url=url, 
+                tipo=tipo, 
+                region=region, 
+                comuna=comuna, 
+                causa=causa,
+                fecha=fecha, 
+                hora=hora, 
+                recursos=", ".join(recursos), 
+                superficie=superficie,
                 contenido_hash=hashlib.md5(texto[:500].encode()).hexdigest()[:16]
             )
         except Exception as e:
-            log(f"Error extracción: {e}", "WARN")
+            log(f"    ✗ Error: {e}", "WARN")
             return None
 
 
@@ -267,7 +338,7 @@ class Dashboard:
 .ft{text-align:center;padding:15px;color:#95a5a6;font-size:.8em}.ft a{color:#48dbfb}
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:rgba(0,0,0,.2)}::-webkit-scrollbar-thumb{background:#48dbfb;border-radius:3px}
 </style></head><body>
-<div class="hdr"><h1>🚨 Monitor SENAPRED</h1><p>Servicio Nacional de Prevención y Respuesta ante Desastres</p>
+<div class="hdr"><h1>🚨 Monitor SENAPRED v5.4</h1><p>Servicio Nacional de Prevención y Respuesta ante Desastres</p>
 <div class="upd"><span id="ua">Cargando...</span></div><div class="ar">🔄 <span id="cd">30</span>s</div></div>
 <div class="sg">
 <div class="sc tot"><h3>Total</h3><div class="sn" id="st">0</div></div>
@@ -315,7 +386,7 @@ let c=30;setInterval(()=>{c--;document.getElementById('cd').textContent=c;if(c<=
 </script></body></html>'''
         with open(CONFIG['archivo_html'], 'w', encoding='utf-8') as f:
             f.write(html)
-        log(f"Dashboard: {CONFIG['archivo_html']}")
+        print(f"📊 Dashboard actualizado: {CONFIG['archivo_html']}")
 
 
 class Monitor:
@@ -336,7 +407,7 @@ class Monitor:
                     data = json.load(f)
                     for a in data.get('alertas', []): self.alertas[a['id']] = Alerta(**a)
                     for c in data.get('cambios', []): self.cambios.append(Cambio(**c))
-                log(f"Cargado: {len(self.alertas)} alertas")
+                log(f"Cargado: {len(self.alertas)} alertas previas")
         except: pass
     
     def _guardar(self):
@@ -353,7 +424,7 @@ class Monitor:
         for a in nuevas:
             if a.id not in self.alertas:
                 n.append(a); self.alertas[a.id] = a
-                self.cambios.append(Cambio(a.id, "nueva", ahora, f"{a.tipo.upper()}: {a.region}"))
+                self.cambios.append(Cambio(a.id, "nueva", ahora, f"{a.tipo.upper()}: {a.region} - {a.causa}"))
             elif a.contenido_hash != self.alertas[a.id].contenido_hash:
                 u.append(a); self.alertas[a.id] = a
                 self.cambios.append(Cambio(a.id, "actualizada", ahora, f"{a.tipo.upper()}: {a.region}"))
@@ -368,7 +439,7 @@ class Monitor:
         os.system('cls' if sys.platform == 'win32' else 'clear')
         print(f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║                    🚨 MONITOR SENAPRED v5.2 🚨                               ║
+║                    🚨 MONITOR SENAPRED v5.4 🚨                               ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
   ⏱️ Cada {self.intervalo//60} min | 📆 Últimos {self.dias_max} días | 🔊 {'ON' if self.con_sonido else 'OFF'}
   💡 Abre {CONFIG['archivo_html']} en tu navegador
@@ -383,21 +454,25 @@ class Monitor:
                 alertas = self.scraper.obtener_alertas()
                 n, u, c = self._detectar_cambios(alertas)
                 
-                if n or u or c:
-                    if n:
-                        print(f"🆕 {len(n)} NUEVA(S)")
-                        for a in n: print(f"   🔴 {a.region} - {a.causa}")
-                        if self.con_sonido: sonido("nueva")
-                        for a in n: notificar(f"🆕 {a.tipo.upper()}", f"{a.region}\n{a.causa}", a.tipo=='roja')
-                    if u: print(f"🔄 {len(u)} ACTUALIZADA(S)")
-                    if c: print(f"❌ {len(c)} CANCELADA(S)")
-                    
-                    self._guardar()
-                    activas = [a for a in self.alertas.values() if a.estado_monitor != 'cancelada']
-                    self.dashboard.generar(activas, self.cambios, datetime.now().strftime("%d/%m/%Y %H:%M"))
-                    print(f"✅ Dashboard ({len(activas)} alertas)")
-                else:
-                    print(f"✓ Sin cambios ({len([a for a in self.alertas.values() if a.estado_monitor != 'cancelada'])})")
+                if n:
+                    print(f"🆕 {len(n)} NUEVA(S)")
+                    for a in n: print(f"   🔴 {a.region} - {a.causa}")
+                    if self.con_sonido: sonido("nueva")
+                    for a in n: notificar(f"🆕 {a.tipo.upper()}", f"{a.region}\n{a.causa}", a.tipo=='roja')
+                if u: 
+                    print(f"🔄 {len(u)} ACTUALIZADA(S)")
+                    if self.con_sonido: sonido("actualizada")
+                if c: 
+                    print(f"❌ {len(c)} CANCELADA(S)")
+                    if self.con_sonido: sonido("cancelada")
+                
+                if not n and not u and not c:
+                    print(f"✓ Sin cambios")
+                
+                self._guardar()
+                activas = [a for a in self.alertas.values() if a.estado_monitor != 'cancelada']
+                self.dashboard.generar(activas, self.cambios, datetime.now().strftime("%d/%m/%Y %H:%M"))
+                print(f"📋 Total: {len(activas)} alertas activas")
                 
                 print(f"⏳ Próxima en {self.intervalo//60} min...")
                 time.sleep(self.intervalo)
@@ -408,7 +483,7 @@ class Monitor:
 
 
 def main():
-    p = argparse.ArgumentParser(description='Monitor SENAPRED v5.2')
+    p = argparse.ArgumentParser(description='Monitor SENAPRED v5.4')
     p.add_argument('--monitor', '-m', action='store_true')
     p.add_argument('--intervalo', '-i', type=int, default=300)
     p.add_argument('--sound', '-s', action='store_true')
@@ -423,17 +498,22 @@ def main():
     if args.monitor:
         Monitor(args.intervalo, args.sound, args.dias).ejecutar()
     else:
-        print(f"\n🔍 Consultando (últimos {args.dias} días)...\n")
+        print(f"\n🔍 Consultando SENAPRED (últimos {args.dias} días)...\n")
         alertas = Scraper(args.dias).obtener_alertas()
+        
+        print(f"\n{'='*60}")
+        print(f"🚨 {len(alertas)} ALERTAS ENCONTRADAS")
+        print(f"{'='*60}\n")
+        
         if alertas:
-            print(f"{'='*50}\n🚨 {len(alertas)} ALERTAS\n{'='*50}\n")
             for a in sorted(alertas, key=lambda x: (0 if x.tipo=='roja' else 1 if x.tipo=='amarilla' else 2)):
                 print(f"{'🔴' if a.tipo=='roja' else '🟡' if a.tipo=='amarilla' else '🟢'} [{a.tipo.upper()}] {a.region}")
-                print(f"   📅 {a.fecha} | ⚠️ {a.causa}\n")
-            Dashboard().generar(alertas, [], datetime.now().strftime("%d/%m/%Y %H:%M"))
-            print(f"{'='*50}\n✅ Dashboard: {CONFIG['archivo_html']}")
-        else:
-            print("📋 Sin alertas")
+                print(f"   📅 {a.fecha} | ⚠️ {a.causa}")
+                if a.superficie: print(f"   🔥 {a.superficie}")
+                print()
+        
+        Dashboard().generar(alertas, [], datetime.now().strftime("%d/%m/%Y %H:%M"))
+        print(f"{'='*60}")
 
 
 if __name__ == "__main__":
